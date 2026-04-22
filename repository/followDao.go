@@ -187,26 +187,27 @@ func (*FollowDao) GetFollowersInfo(userId int64) ([]int64, int64, error) {
 
 func (*FollowDao) GetFriendsInfo(userId int64) ([]int64, int64, error) {
 
-	friendId, friendCnt, err := followDao.GetFollowingsInfo(userId)
+	friendIds, _, err := followDao.GetFollowingsInfo(userId)
 
 	if nil != err {
-		log.Println(err.Error())
+		log.Printf("GetFollowingsInfo failed: %v", err)
 		return nil, -1, err
 	}
 
-	for i := 0; int64(i) < friendCnt; i++ {
-		// 判断每一个登陆用户的关注用户是否关注了登陆用户，没关注就从集合里面剔除
-		if flag, err1 := followDao.FindFollowRelation(friendId[i], userId); !flag {
-			if err1 != nil {
-				return nil, -1, err1
-			}
-			friendId = append(friendId[:i], friendId[i+1:]...)
-			friendCnt--
-			i--
+	// 使用安全的过滤方式，避免数组切片越界
+	result := make([]int64, 0)
+	for _, id := range friendIds {
+		flag, err1 := followDao.FindFollowRelation(id, userId)
+		if err1 != nil {
+			log.Printf("FindFollowRelation failed: %v", err1)
+			return nil, -1, err1
 		}
-
+		if flag {
+			result = append(result, id)
+		}
 	}
-	return friendId, friendCnt, nil
+
+	return result, int64(len(result)), nil
 
 }
 

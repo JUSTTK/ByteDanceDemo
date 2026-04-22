@@ -1,0 +1,57 @@
+# Test configuration for ByteDanceDemo
+
+# Database settings for tests
+database:
+  driver: mysql
+  host: localhost
+  port: 3306
+  username: test_user
+  password: test_password
+  database: bytedancedemo_test
+  max_idle_conns: 10
+  max_open_conns: 100
+  conn_max_lifetime: 3600
+
+# Redis settings for tests
+redis:
+  host: localhost
+  port: 6379
+  password: ""
+  database: 1
+  pool_size: 100
+
+# JWT settings for tests
+jwt:
+  secret: test_secret_key_for_jwt_tokens
+  expiration: 24h
+
+# Test settings
+test:
+  # Number of test iterations for benchmarks
+  benchmark_iterations: 1000
+
+  # Number of concurrent goroutines for load tests
+  concurrency: 100
+
+  # Timeout for API requests
+  request_timeout: 30s
+
+  # Enable debug logging for tests
+  debug: true
+
+  # Clean up test data after each test
+  cleanup_after_test: true
+
+# Test data
+test_data:
+  # Number of test users to create
+  users: 100
+
+  # Number of test videos to create
+  videos: 1000
+
+  # Number of test comments to create
+  comments: 5000
+
+  # Number of test messages to create
+  messages: 2000

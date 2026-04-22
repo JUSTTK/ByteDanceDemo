@@ -5,6 +5,7 @@ import (
 	"bytedancedemo/dao"
 	"bytedancedemo/model"
 	"bytedancedemo/utils"
+	"bytedancedemo/utils/encryption"
 	"errors"
 	"go.uber.org/zap"
 	"sync"
@@ -43,9 +44,9 @@ func (usi *UserServiceImpl) InsertUser(user *model.User) (res *model.User, isSuc
 	return resList[0], true
 }
 
-func (usi *UserServiceImpl) GetUserBasicByPassword(username string, password string) (user *model.User, isExist bool) {
+func (usi *UserServiceImpl) GetUserBasicByPassword(username string, hashedPassword string) (user *model.User, isExist bool) {
 	u := dao.User
-	resList, err := u.Where(u.Name.Eq(username), u.Password.Eq(password)).Find()
+	resList, err := u.Where(u.Name.Eq(username)).Find()
 	if err != nil {
 		zap.L().Fatal("查询用户失败", zap.String("err", err.Error()))
 		return nil, false
@@ -54,6 +55,13 @@ func (usi *UserServiceImpl) GetUserBasicByPassword(username string, password str
 		zap.L().Warn("未查询到用户", zap.Error(errors.New("用户名或密码错误")))
 		return nil, false
 	}
+
+	// Compare hashed password using bcrypt
+	if err := encryption.ComparePassword(resList[0].Password, hashedPassword); err != nil {
+		zap.L().Warn("密码不正确", zap.Error(err))
+		return nil, false
+	}
+
 	return resList[0], true
 }
 

@@ -4,7 +4,7 @@ package repository
 import (
 	"bytedancedemo/config"
 	"bytedancedemo/dao"
-	"bytedancedemo/database"
+	"bytedancedemo/database/mysql"
 	"bytedancedemo/model"
 	"fmt"
 	"strconv"
@@ -13,16 +13,16 @@ import (
 
 func TestDeleteComment(t *testing.T) {
 	config.Init("../config/settings.yml")
-	database.Init()
-	dao.SetDefault(database.DB)
+	mysql.Init()
+	dao.SetDefault(mysql.DB)
 	err := DeleteComment(25)
 	fmt.Printf("err = %v\n", err)
 }
 
 func TestGetCommentCnt(t *testing.T) {
 	config.Init("../config/settings.yml")
-	database.Init()
-	dao.SetDefault(database.DB)
+	mysql.Init()
+	dao.SetDefault(mysql.DB)
 	res, err := GetCommentCnt(1)
 	fmt.Printf("res = %v\n", res)
 	fmt.Printf("err = %v\n", err)
@@ -30,8 +30,8 @@ func TestGetCommentCnt(t *testing.T) {
 
 func TestGetCommentList(t *testing.T) {
 	config.Init("../config/settings.yml")
-	database.Init()
-	dao.SetDefault(database.DB)
+	mysql.Init()
+	dao.SetDefault(mysql.DB)
 	list, err := GetCommentList(1)
 	for i, comment := range list {
 		fmt.Printf("comment %d = %v\n", i, comment)
@@ -41,8 +41,8 @@ func TestGetCommentList(t *testing.T) {
 
 func TestInsertComment(t *testing.T) {
 	config.Init("../config/settings.yml")
-	database.Init()
-	dao.SetDefault(database.DB)
+	mysql.Init()
+	dao.SetDefault(mysql.DB)
 	comment, err := InsertComment(model.Comment{
 		UserID:     3,
 		VideoID:    3,

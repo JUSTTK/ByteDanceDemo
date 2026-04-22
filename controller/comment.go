@@ -26,7 +26,7 @@ func CommentAction(c *gin.Context) {
 	// 获取userId
 	log.Println("Controller_Comment_Action: run") //函数已运行
 	userId := c.GetInt64("userId")
-	videoId, err := strconv.ParseInt(c.Query("video_id"), 10, 64)
+	videoId, err := strconv.ParseInt(c.PostForm("video_id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusOK, CommentActionResponse{
 			Response: Response{StatusCode: -1,
@@ -34,7 +34,7 @@ func CommentAction(c *gin.Context) {
 		})
 		return
 	}
-	actionType, err := strconv.ParseInt(c.Query("action_type"), 10, 64)
+	actionType, err := strconv.ParseInt(c.PostForm("action_type"), 10, 64)
 	if err != nil || actionType < 1 || actionType > 2 {
 		c.JSON(http.StatusOK, CommentActionResponse{
 			Response: Response{StatusCode: -1,
@@ -46,7 +46,7 @@ func CommentAction(c *gin.Context) {
 	//switch {
 	// 评论
 	if actionType == 1 {
-		content := c.Query("comment_text")
+		content := c.PostForm("comment_text")
 		sensetive.InitFilter()
 		content = sensetive.Filter.Replace(content, '#')
 		var comment model.Comment
@@ -76,7 +76,7 @@ func CommentAction(c *gin.Context) {
 
 		// 取消评论
 	} else {
-		commentId, err := strconv.ParseInt(c.Query("comment_id"), 10, 64)
+		commentId, err := strconv.ParseInt(c.PostForm("comment_id"), 10, 64)
 		if err != nil {
 			c.JSON(http.StatusOK, CommentActionResponse{
 				Response: Response{StatusCode: -1,

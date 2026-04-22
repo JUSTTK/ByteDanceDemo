@@ -1,0 +1,772 @@
+openapi: 3.0.3
+info:
+  title: ByteDanceDemo API
+  description: |-
+    A simplified TikTok/Douyin clone backend API providing video sharing,
+    user interactions, and social features.
+  version: 1.0.0
+  contact:
+    name: ByteDanceDemo Team
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+  - url: https://api.example.com
+    description: Production server
+
+tags:
+  - name: User
+    description: User authentication and profile management
+  - name: Video
+    description: Video upload, listing, and feed
+  - name: Social
+    description: Social interactions (likes, follows, comments)
+  - name: Message
+    description: Real-time messaging system
+
+paths:
+  /douyin/feed/:
+    get:
+      tags:
+        - Video
+      summary: Get video feed
+      description: Returns list of videos with optional pagination and user authentication
+      operationId: getFeed
+      parameters:
+        - name: token
+          in: query
+          description: User authentication token (optional)
+          required: false
+          schema:
+            type: string
+        - name: latest_time
+          in: query
+          description: Optional timestamp for pagination
+          required: false
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Successful feed retrieval
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FeedResponse'
+
+  /douyin/user/:
+    get:
+      tags:
+        - User
+      summary: Get user information
+      description: Returns detailed user information
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_id
+          in: query
+          description: User ID to retrieve (defaults to current user)
+          required: false
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Successful user info retrieval
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /douyin/user/register/:
+    post:
+      tags:
+        - User
+      summary: User registration
+      description: Register a new user account
+      parameters:
+        - name: username
+          in: query
+          description: Username (3-20 characters, alphanumeric)
+          required: true
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 20
+        - name: password
+          in: query
+          description: Password (min 6 characters, must contain letters and numbers)
+          required: true
+          schema:
+            type: string
+            minLength: 6
+      responses:
+        '200':
+          description: Registration successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserLoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /douyin/user/login/:
+    post:
+      tags:
+        - User
+      summary: User login
+      description: Authenticate user and return access token
+      parameters:
+        - name: username
+          in: query
+          description: Username
+          required: true
+          schema:
+            type: string
+        - name: password
+          in: query
+          description: Password
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserLoginResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /douyin/publish/action/:
+    post:
+      tags:
+        - Video
+      summary: Publish video
+      description: Upload and publish a new video
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - token
+                - data
+              properties:
+                token:
+                  type: string
+                  description: User authentication token
+                data:
+                  type: string
+                  format: binary
+                  description: Video file
+      responses:
+        '200':
+          description: Video published successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasicResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /douyin/publish/list/:
+    get:
+      tags:
+        - Video
+      summary: Get user's published videos
+      description: Returns list of videos published by a specific user
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_id
+          in: query
+          description: User ID
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: token
+          in: query
+          description: User authentication token
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Video list retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoListResponse'
+
+  /douyin/favorite/action/:
+    post:
+      tags:
+        - Social
+      summary: Like/unlike video
+      description: Toggle like status for a video
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: token
+          in: query
+          description: User authentication token
+          required: true
+          schema:
+            type: string
+        - name: video_id
+          in: query
+          description: Video ID
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: action_type
+          in: query
+          description: Action type (1=like, 2=unlike)
+          required: true
+          schema:
+            type: integer
+            enum: [1, 2]
+      responses:
+        '200':
+          description: Action completed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasicResponse'
+
+  /douyin/favorite/list/:
+    get:
+      tags:
+        - Social
+      summary: Get user's favorite videos
+      description: Returns list of videos liked by user
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_id
+          in: query
+          description: User ID
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: token
+          in: query
+          description: User authentication token
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Favorite list retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VideoListResponse'
+
+  /douyin/comment/action/:
+    post:
+      tags:
+        - Social
+      summary: Post comment
+      description: Add a comment to a video
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: token
+          in: query
+          description: User authentication token
+          required: true
+          schema:
+            type: string
+        - name: video_id
+          in: query
+          description: Video ID
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: action_type
+          in: query
+          description: Action type (1=add, 2=delete)
+          required: true
+          schema:
+            type: integer
+            enum: [1, 2]
+        - name: comment_text
+          in: query
+          description: Comment content (required for add)
+          required: false
+          schema:
+            type: string
+        - name: comment_id
+          in: query
+          description: Comment ID (required for delete)
+          required: false
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Comment action completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentActionResponse'
+
+  /douyin/comment/list/:
+    get:
+      tags:
+        - Social
+      summary: Get video comments
+      description: Returns list of comments for a video
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: token
+          in: query
+          description: User authentication token
+          required: true
+          schema:
+            type: string
+        - name: video_id
+          in: query
+          description: Video ID
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Comments retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentListResponse'
+
+  /douyin/relation/action/:
+    post:
+      tags:
+        - Social
+      summary: Follow/unfollow user
+      description: Toggle follow status for a user
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: token
+          in: query
+          description: User authentication token
+          required: true
+          schema:
+            type: string
+        - name: to_user_id
+          in: query
+          description: Target user ID
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: action_type
+          in: query
+          description: Action type (1=follow, 2=unfollow)
+          required: true
+          schema:
+            type: integer
+            enum: [1, 2]
+      responses:
+        '200':
+          description: Follow action completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasicResponse'
+
+  /douyin/relation/follow/list/:
+    get:
+      tags:
+        - Social
+      summary: Get following list
+      description: Returns list of users that the current user follows
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_id
+          in: query
+          description: User ID
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: token
+          in: query
+          description: User authentication token
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Following list retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+
+  /douyin/relation/follower/list/:
+    get:
+      tags:
+        - Social
+      summary: Get followers list
+      description: Returns list of users who follow the specified user
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_id
+          in: query
+          description: User ID
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: token
+          in: query
+          description: User authentication token
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Followers list retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+
+  /douyin/relation/friend/list/:
+    get:
+      tags:
+        - Social
+      summary: Get friends list
+      description: Returns list of mutual followers (friends)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: user_id
+          in: query
+          description: User ID
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: token
+          in: query
+          description: User authentication token
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Friends list retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+
+  /douyin/message/chat/:
+    get:
+      tags:
+        - Message
+      summary: Get chat history
+      description: Returns message history between two users
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: token
+          in: query
+          description: User authentication token
+          required: true
+          schema:
+            type: string
+        - name: to_user_id
+          in: query
+          description: Target user ID
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: pre_msg_time
+          in: query
+          description: Last message timestamp for pagination
+          required: false
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Chat history retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageListResponse'
+
+  /douyin/message/action/:
+    post:
+      tags:
+        - Message
+      summary: Send message
+      description: Send a message to another user
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: token
+          in: query
+          description: User authentication token
+          required: true
+          schema:
+            type: string
+        - name: to_user_id
+          in: query
+          description: Target user ID
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: content
+          in: query
+          description: Message content
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Message sent successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasicResponse'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    BasicResponse:
+      type: object
+      properties:
+        status_code:
+          type: integer
+          format: int32
+          description: Status code (0=success, 1=error)
+        status_msg:
+          type: string
+          description: Status message
+
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: User ID
+        name:
+          type: string
+          description: Username
+        follow_count:
+          type: integer
+          format: int64
+          description: Number of following
+        follower_count:
+          type: integer
+          format: int64
+          description: Number of followers
+        is_follow:
+          type: boolean
+          description: Whether current user follows this user
+
+    Video:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Video ID
+        author:
+          $ref: '#/components/schemas/User'
+          description: Video author information
+        play_url:
+          type: string
+          description: Video playback URL
+        cover_url:
+          type: string
+          description: Video cover image URL
+        favorite_count:
+          type: integer
+          format: int64
+          description: Number of likes
+        comment_count:
+          type: integer
+          format: int64
+          description: Number of comments
+        is_favorite:
+          type: boolean
+          description: Whether current user liked this video
+
+    Comment:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Comment ID
+        user:
+          $ref: '#/components/schemas/User'
+          description: Comment author
+        content:
+          type: string
+          description: Comment text
+        create_date:
+          type: string
+          description: Comment creation date
+
+    Message:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Message ID
+        content:
+          type: string
+          description: Message content
+        create_time:
+          type: string
+          description: Message creation time
+
+    Response:
+      type: object
+      properties:
+        status_code:
+          type: integer
+          format: int32
+          description: Status code (0=success, 1=error)
+        status_msg:
+          type: string
+          description: Status message
+
+    FeedResponse:
+      allOf:
+        - $ref: '#/components/schemas/Response'
+        - type: object
+          properties:
+            video_list:
+              type: array
+              items:
+                $ref: '#/components/schemas/Video'
+
+    UserResponse:
+      allOf:
+        - $ref: '#/components/schemas/Response'
+        - type: object
+          properties:
+            user:
+              $ref: '#/components/schemas/User'
+
+    UserLoginResponse:
+      allOf:
+        - $ref: '#/components/schemas/Response'
+        - type: object
+          properties:
+            user_id:
+              type: integer
+              format: int64
+              description: User ID
+            token:
+              type: string
+              description: JWT authentication token
+
+    VideoListResponse:
+      allOf:
+        - $ref: '#/components/schemas/Response'
+        - type: object
+          properties:
+            video_list:
+              type: array
+              items:
+                $ref: '#/components/schemas/Video'
+
+    CommentActionResponse:
+      allOf:
+        - $ref: '#/components/schemas/Response'
+        - type: object
+          properties:
+            comment:
+              $ref: '#/components/schemas/Comment'
+
+    CommentListResponse:
+      allOf:
+        - $ref: '#/components/schemas/Response'
+        - type: object
+          properties:
+            comment_list:
+              type: array
+              items:
+                $ref: '#/components/schemas/Comment'
+
+    UserListResponse:
+      allOf:
+        - $ref: '#/components/schemas/Response'
+        - type: object
+          properties:
+            user_list:
+              type: array
+              items:
+                $ref: '#/components/schemas/User'
+
+    MessageListResponse:
+      allOf:
+        - $ref: '#/components/schemas/Response'
+        - type: object
+          properties:
+            message_list:
+              type: array
+              items:
+                $ref: '#/components/schemas/Message'
+
+  responses:
+    BadRequest:
+      description: Bad request - invalid parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BasicResponse'
+
+    Unauthorized:
+      description: Unauthorized - invalid or missing token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BasicResponse'
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BasicResponse'

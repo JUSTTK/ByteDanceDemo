@@ -20,12 +20,12 @@ func FavoriteAction(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "User ID not found in context"})
 		return
 	}
-	videoId, err := strconv.ParseInt(c.Query("video_id"), 10, 64)
+	videoId, err := strconv.ParseInt(c.PostForm("video_id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"msg": "请求参数异常", "data": err})
 		return
 	}
-	actionType64, err := strconv.ParseInt(c.Query("action_type"), 10, 32)
+	actionType64, err := strconv.ParseInt(c.PostForm("action_type"), 10, 32)
 	actionType := int32(actionType64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"msg": "请求参数异常", "data": err})

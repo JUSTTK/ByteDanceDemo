@@ -28,7 +28,7 @@ func Feed(c *gin.Context) {
 	} else {
 		temp, err := strconv.ParseInt(latest_time_str, 10, 64)
 		if err != nil {
-			fmt.Println("%s cannot change to int64", latest_time_str)
+			fmt.Printf("%s cannot change to int64\n", latest_time_str)
 			panic(1)
 		}
 		// 时间只能是比现在小的

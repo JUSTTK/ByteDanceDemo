@@ -1,0 +1,216 @@
+# Makefile for running tests
+
+# Variables
+APP_NAME := bytedancedemo
+TEST_DIR := ./test
+GO_TEST := go test -v
+GO_BENCH := go test -bench=. -benchmem
+GO_COVER := go test -coverprofile=coverage.out
+GO_COVER_HTML := go tool cover -html=coverage.out
+
+# Colors
+RED := \033[0;31m
+GREEN := \033[0;32m
+YELLOW := \033[0;33m
+NC := \033[0m # No Color
+
+.PHONY: test test-all test-unit test-integration test-benchmark test-coverage test-clean help
+
+# Default target
+help:
+	@echo "$(GREEN)Available targets:$(NC)"
+	@echo "  test              - Run all tests"
+	@echo "  test-unit         - Run unit tests"
+	@echo "  test-integration  - Run integration tests"
+	@echo "  test-benchmark    - Run benchmark tests"
+	@echo "  test-coverage     - Run tests with coverage"
+	@echo "  test-coverage-html- Run tests with coverage and generate HTML report"
+	@echo "  test-clean        - Clean test artifacts"
+	@echo "  test-watch        - Watch for changes and run tests"
+
+# Run all tests
+test: test-unit test-integration
+
+# Run unit tests
+test-unit:
+	@echo "$(GREEN)Running unit tests...$(NC)"
+	$(GO_TEST) -tags=unit $(TEST_DIR)/...
+	@echo "$(GREEN)Unit tests completed!$(NC)"
+
+# Run integration tests
+test-integration:
+	@echo "$(GREEN)Running integration tests...$(NC)"
+	$(GO_TEST) -tags=integration $(TEST_DIR)/...
+	@echo "$(GREEN)Integration tests completed!$(NC)"
+
+# Run benchmark tests
+test-benchmark:
+	@echo "$(GREEN)Running benchmark tests...$(NC)"
+	$(GO_BENCH) -benchtime=10s $(TEST_DIR)/...
+	@echo "$(GREEN)Benchmark tests completed!$(NC)"
+
+# Run tests with coverage
+test-coverage:
+	@echo "$(GREEN)Running tests with coverage...$(NC)"
+	$(GO_COVER) ./...
+	@echo "$(GREEN)Test coverage completed!$(NC)"
+	@echo "Coverage report generated: coverage.out"
+
+# Run tests with coverage and generate HTML report
+test-coverage-html: test-coverage
+	@echo "$(GREEN)Generating HTML coverage report...$(NC)"
+	$(GO_COVER_HTML) -o coverage.html
+	@echo "$(GREEN)HTML coverage report generated: coverage.html$(NC)"
+
+# Clean test artifacts
+test-clean:
+	@echo "$(YELLOW)Cleaning test artifacts...$(NC)"
+	rm -f coverage.out coverage.html
+	@echo "$(GREEN)Test artifacts cleaned!$(NC)"
+
+# Watch for changes and run tests
+test-watch:
+	@echo "$(GREEN)Watching for changes and running tests...$(NC)"
+	@if command -v entr > /dev/null; then \
+		find . -name "*.go" | entr -r make test; \
+	else \
+		echo "$(RED)entr not found. Install it with: brew install entr (macOS) or apt-get install entr (Linux)$(NC)"; \
+	fi
+
+# Run specific test package
+test-package:
+	@echo "$(GREEN)Running tests for package: $(PACKAGE)$(NC)"
+	$(GO_TEST) ./$(PACKAGE)/...
+
+# Run specific test function
+test-function:
+	@echo "$(GREEN)Running test function: $(FUNCTION)$(NC)"
+	$(GO_TEST) -run=$(FUNCTION) ./...
+
+# Run tests with race detector
+test-race:
+	@echo "$(GREEN)Running tests with race detector...$(NC)"
+	$(GO_TEST) -race ./...
+
+# Run tests with verbose output
+test-verbose:
+	@echo "$(GREEN)Running tests with verbose output...$(NC)"
+	$(GO_TEST) -v ./...
+
+# Run tests with short mode (skip long tests)
+test-short:
+	@echo "$(GREEN)Running tests in short mode...$(NC)"
+	$(GO_TEST) -short ./...
+
+# Run tests with profiling
+test-profile:
+	@echo "$(GREEN)Running tests with CPU profiling...$(NC)"
+	$(GO_TEST) -cpuprofile=cpu.prof ./...
+	@echo "$(GREEN)CPU profile generated: cpu.prof$(NC)"
+
+# Run tests with memory profiling
+test-mem-profile:
+	@echo "$(GREEN)Running tests with memory profiling...$(NC)"
+	$(GO_TEST) -memprofile=mem.prof ./...
+	@echo "$(GREEN)Memory profile generated: mem.prof$(NC)"
+
+# Run tests with leak detection
+test-leak:
+	@echo "$(GREEN)Running tests with leak detection...$(NC)"
+	$(GO_TEST) -leak /.../$(APP_NAME)
+
+# Run tests in parallel
+test-parallel:
+	@echo "$(GREEN)Running tests in parallel...$(NC)"
+	$(GO_TEST) -parallel=8 ./...
+
+# Run tests with timeout
+test-timeout:
+	@echo "$(GREEN)Running tests with timeout...$(NC)"
+	$(GO_TEST) -timeout=5m ./...
+
+# Run tests with build flags
+test-build:
+	@echo "$(GREEN)Building and running tests...$(NC)"
+	go build -o /tmp/$(APP_NAME) ./...
+	/tmp/$(APP_NAME) -test.v
+
+# Test database operations
+test-db:
+	@echo "$(GREEN)Testing database operations...$(NC)"
+	$(GO_TEST) -run="TestDatabase" ./...
+
+# Test Redis operations
+test-redis:
+	@echo "$(GREEN)Testing Redis operations...$(NC)"
+	$(GO_TEST) -run="TestRedis" ./...
+
+# Test API endpoints
+test-api:
+	@echo "$(GREEN)Testing API endpoints...$(NC)"
+	$(GO_TEST) -run="TestAPI" ./...
+
+# Test authentication
+test-auth:
+	@echo "$(GREEN)Testing authentication...$(NC)"
+	$(GO_TEST) -run="TestAuth" ./...
+
+# Test authorization
+test-authorization:
+	@echo "$(GREEN)Testing authorization...$(NC)"
+	$(GO_TEST) -run="TestAuthorization" ./...
+
+# Test data validation
+test-validation:
+	@echo "$(GREEN)Testing data validation...$(NC)"
+	$(GO_TEST) -run="TestValidation" ./...
+
+# Test error handling
+test-errors:
+	@echo "$(GREEN)Testing error handling...$(NC)"
+	$(GO_TEST) -run="TestError" ./...
+
+# Test performance
+test-performance:
+	@echo "$(GREEN)Testing performance...$(NC)"
+	$(GO_TEST) -bench="Benchmark" -benchtime=5s ./...
+
+# Run tests and show coverage percentage
+test-cover:
+	@echo "$(GREEN)Running tests and showing coverage...$(NC)"
+	$(GO_COVER) ./...
+	@echo "$(YELLOW)Coverage Summary:$(NC)"
+	@go tool cover -func=coverage.out
+
+# Run tests with specific build tags
+test-tags:
+	@echo "$(GREEN)Running tests with tags: $(TAGS)$(NC)"
+	$(GO_TEST) -tags=$(TAGS) ./...
+
+# Install test dependencies
+test-deps:
+	@echo "$(GREEN)Installing test dependencies...$(NC)"
+	go install github.com/golang/mock/mockgen@latest
+	go install github.com/onsi/ginkgo/v2/ginkgo@latest
+	@echo "$(GREEN)Test dependencies installed!$(NC)"
+
+# Generate mock files
+test-mocks:
+	@echo "$(GREEN)Generating mock files...$(NC)"
+	mockgen -source=./service/*.go -destination=./test/mocks/service_mock.go
+	@echo "$(GREEN)Mock files generated!$(NC)"
+
+# Lint tests
+test-lint:
+	@echo "$(GREEN)Linting test files...$(NC)"
+	golangci-lint run ./test/...
+
+# Format test files
+test-fmt:
+	@echo "$(GREEN)Formatting test files...$(NC)"
+	go fmt ./test/...
+
+# Vet test files
+test-vet:
+	@echo "$(GREEN)Vetting test files...$(NC)"
+	go vet ./test/...

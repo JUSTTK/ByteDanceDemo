@@ -1,8 +1,10 @@
 package service
 
 import (
+	"bytedancedemo/dao"
 	"bytedancedemo/middleware/rabbitmq"
 	"bytedancedemo/middleware/redis"
+	"bytedancedemo/model"
 	"bytedancedemo/repository"
 	"fmt"
 	"log"
@@ -70,28 +72,43 @@ func (followService *FollowServiceImp) FollowAction(userId int64, targetId int64
 
 	followDao := repository.NewFollowDaoInstance()
 	follow, err := followDao.FindEverFollowing(userId, targetId)
-	// 获取关注的消息队列
-	followAddMQ := rabbitmq.SimpleFollowAddMQ
-	// 寻找SQL 出错。
 	if nil != err {
 		return false, err
 	}
+
+	// 获取关注的消息队列
+	followAddMQ := rabbitmq.SimpleFollowAddMQ
+
+	var dbErr error
 	// 曾经关注过，只需要update一下followed即可。
 	if nil != follow {
-		//发送消息队列
+		_, dbErr = followDao.UpdateFollowRelation(userId, targetId, int8(1))
+		if dbErr != nil {
+			log.Printf("UpdateFollowRelation failed: %v", dbErr)
+			return false, dbErr
+		}
+	} else {
+		_, dbErr = followDao.InsertFollowRelation(userId, targetId)
+		if dbErr != nil {
+			log.Printf("InsertFollowRelation failed: %v", dbErr)
+			return false, dbErr
+		}
+	}
+
+	// 数据库操作成功后，发送消息队列通知其他模块
+	if nil != follow {
 		err := followAddMQ.PublishSimpleFollow(fmt.Sprintf("%d-%d-%s", userId, targetId, "update"))
 		if err != nil {
-			return false, err
+			log.Printf("Publish follow update message failed: %v", err)
 		}
-		followService.AddToRDBWhenFollow(userId, targetId)
-		return true, nil
+	} else {
+		err = followAddMQ.PublishSimpleFollow(fmt.Sprintf("%d-%d-%s", userId, targetId, "insert"))
+		if err != nil {
+			log.Printf("Publish follow insert message failed: %v", err)
+		}
+	}
 
-	}
-	//发送消息队列
-	err = followAddMQ.PublishSimpleFollow(fmt.Sprintf("%d-%d-%s", userId, targetId, "insert"))
-	if err != nil {
-		return false, err
-	}
+	// 更新缓存
 	followService.AddToRDBWhenFollow(userId, targetId)
 	return true, nil
 
@@ -103,14 +120,14 @@ func (followService *FollowServiceImp) AddToRDBWhenFollow(userId int64, targetId
 	keyCnt1, err1 := redis.UserFollowings.Exists(redis.Ctx, strconv.FormatInt(userId, 10)).Result()
 
 	if err1 != nil {
-		log.Println(err1.Error())
+		log.Printf("Check Redis existence failed: %v", err1)
 	}
 
 	// 只判定键是否不存在，若不存在即从数据库导入
 	if keyCnt1 <= 0 {
 		userFollowingsId, _, err := followDao.GetFollowingsInfo(userId)
 		if err != nil {
-			log.Println(err.Error())
+			log.Printf("GetFollowingsInfo failed: %v", err)
 			return
 		}
 		ImportToRDBFollowing(userId, userFollowingsId)
@@ -122,14 +139,14 @@ func (followService *FollowServiceImp) AddToRDBWhenFollow(userId int64, targetId
 	keyCnt2, err2 := redis.UserFollowers.Exists(redis.Ctx, strconv.FormatInt(targetId, 10)).Result()
 
 	if err2 != nil {
-		log.Println(err2.Error())
+		log.Printf("Check Redis existence failed: %v", err2)
 	}
 
 	if keyCnt2 <= 0 {
 		//获取target的粉丝，直接刷新，关注时刷新target的粉丝
 		userFollowersId, _, err := followDao.GetFollowersInfo(targetId)
 		if err != nil {
-			log.Println(err.Error())
+			log.Printf("GetFollowersInfo failed: %v", err)
 			return
 		}
 		ImportToRDBFollower(targetId, userFollowersId)
@@ -144,12 +161,12 @@ func (followService *FollowServiceImp) AddToRDBWhenFollow(userId int64, targetId
 		keyCnt3, err3 := redis.UserFriends.Exists(redis.Ctx, strconv.FormatInt(userId, 10)).Result()
 
 		if err3 != nil {
-			log.Println(err3.Error())
+			log.Printf("Check Redis existence failed: %v", err3)
 		}
 		if keyCnt3 <= 0 {
 			userFriendsId1, _, err := followDao.GetFriendsInfo(userId)
 			if err != nil {
-				log.Println(err)
+				log.Printf("GetFriendsInfo failed: %v", err)
 				return
 			}
 			ImportToRDBFriend(userId, userFriendsId1)
@@ -161,13 +178,13 @@ func (followService *FollowServiceImp) AddToRDBWhenFollow(userId int64, targetId
 		keyCnt4, err4 := redis.UserFriends.Exists(redis.Ctx, strconv.FormatInt(targetId, 10)).Result()
 
 		if err4 != nil {
-			log.Println(err4.Error())
+			log.Printf("Check Redis existence failed: %v", err4)
 		}
 		if keyCnt4 <= 0 {
 			//获取target的好友，直接刷新，关注时刷新target的好友
 			userFriendsId2, _, err := followDao.GetFriendsInfo(targetId)
 			if err != nil {
-				log.Println(err)
+				log.Printf("GetFriendsInfo failed: %v", err)
 				return
 			}
 			ImportToRDBFriend(targetId, userFriendsId2)
@@ -184,8 +201,6 @@ func (followService *FollowServiceImp) AddToRDBWhenFollow(userId int64, targetId
 // CancelFollowAction 取关操作的业务
 func (followService *FollowServiceImp) CancelFollowAction(userId int64, targetId int64) (bool, error) {
 
-	// 获取取关的消息队列
-	followDelMQ := rabbitmq.SimpleFollowDelMQ
 	followDao := repository.NewFollowDaoInstance()
 	follow, err := followDao.FindEverFollowing(userId, targetId)
 	// 寻找 SQL 出错。
@@ -194,13 +209,21 @@ func (followService *FollowServiceImp) CancelFollowAction(userId int64, targetId
 	}
 	// 曾经关注过，只需要update一下cancel即可。
 	if nil != follow {
-		err := followDelMQ.PublishSimpleFollow(fmt.Sprintf("%d-%d-%s", userId, targetId, "update"))
+		_, err := followDao.UpdateFollowRelation(userId, targetId, int8(0))
 		if err != nil {
+			log.Printf("UpdateFollowRelation (cancel) failed: %v", err)
 			return false, err
 		}
+
+		// 获取取关的消息队列
+		followDelMQ := rabbitmq.SimpleFollowDelMQ
+		err = followDelMQ.PublishSimpleFollow(fmt.Sprintf("%d-%d-%s", userId, targetId, "update"))
+		if err != nil {
+			log.Printf("Publish cancel follow message failed: %v", err)
+		}
+
 		DelToRDBWhenCancelFollow(userId, targetId)
 		return true, nil
-
 	}
 	// 没有关注关系
 	return false, nil
@@ -228,20 +251,25 @@ func GetFollowingsByRedis(userId int64) ([]int64, int64, error) {
 	keyCnt, err := redis.UserFollowings.Exists(redis.Ctx, strconv.FormatInt(userId, 10)).Result()
 
 	if err != nil {
-		log.Println(err.Error())
+		log.Printf("Check Redis existence failed: %v", err)
+		return nil, 0, err
 	}
 
 	// 若键存在，获取缓存数据后返回
 	if keyCnt > 0 {
 		ids := redis.UserFollowings.SMembers(redis.Ctx, strconv.FormatInt(userId, 10)).Val()
-		idsInt64, _ := convertToInt64Array(ids)
-
+		idsInt64, err := convertToInt64Array(ids)
+		if err != nil {
+			log.Printf("ConvertToInt64Array failed: %v", err)
+			return nil, 0, err
+		}
 		return idsInt64, int64(len(idsInt64)), nil
 	} else {
 		// 键不存在，获取数据库数据，更新缓存并返回
 		userFollowingsId, userFollowingsCnt, err1 := followDao.GetFollowingsInfo(userId)
 		if err1 != nil {
-			log.Println(err1.Error())
+			log.Printf("GetFollowingsInfo failed: %v", err1)
+			return nil, 0, err1
 		}
 		ImportToRDBFollowing(userId, userFollowingsId)
 		return userFollowingsId, userFollowingsCnt, nil
@@ -254,7 +282,7 @@ func (followService *FollowServiceImp) GetFollowings(userId int64) ([]User, erro
 	// 调用集成redis的关注用户获取接口获取关注用户id和关注用户数量
 	userFollowingsId, userFollowingsCnt, err := GetFollowingsByRedis(userId)
 	if nil != err {
-		log.Println(err.Error())
+		log.Printf("GetFollowingsByRedis failed: %v", err)
 	}
 
 	// 根据关注用户数量创建空用户结构体数组
@@ -264,7 +292,7 @@ func (followService *FollowServiceImp) GetFollowings(userId int64) ([]User, erro
 	err1 := followService.BuildUser(userId, userFollowings, userFollowingsId, 0)
 
 	if nil != err1 {
-		log.Println(err1.Error())
+		log.Printf("BuildUser failed: %v", err1)
 	}
 
 	return userFollowings, nil
@@ -280,20 +308,25 @@ func GetFollowersByRedis(userId int64) ([]int64, int64, error) {
 	keyCnt, err := redis.UserFollowers.Exists(redis.Ctx, strconv.FormatInt(userId, 10)).Result()
 
 	if err != nil {
-		log.Println(err.Error())
+		log.Printf("Check Redis existence failed: %v", err)
+		return nil, 0, err
 	}
 
 	if keyCnt > 0 {
 		// 键存在，获取键中集合元素
 		ids := redis.UserFollowers.SMembers(redis.Ctx, strconv.FormatInt(userId, 10)).Val()
-		idsInt64, _ := convertToInt64Array(ids)
-
+		idsInt64, err := convertToInt64Array(ids)
+		if err != nil {
+			log.Printf("ConvertToInt64Array failed: %v", err)
+			return nil, 0, err
+		}
 		return idsInt64, int64(len(idsInt64)), nil
 	} else {
 		// 键不存在，获取数据库数据更新至redis，返回数据库所获取数据
 		userFollowersId, userFollowersCnt, err1 := followDao.GetFollowersInfo(userId)
 		if err1 != nil {
-			log.Println(err1.Error())
+			log.Printf("GetFollowersInfo failed: %v", err1)
+			return nil, 0, err1
 		}
 		ImportToRDBFollower(userId, userFollowersId)
 		return userFollowersId, userFollowersCnt, nil
@@ -307,7 +340,7 @@ func (followService *FollowServiceImp) GetFollowers(userId int64) ([]User, error
 	userFollowersId, userFollowersCnt, err := GetFollowersByRedis(userId)
 
 	if nil != err {
-		log.Println(err.Error())
+		log.Printf("GetFollowersByRedis failed: %v", err)
 	}
 
 	// 根据粉丝数量创建空用户结构体数组
@@ -317,7 +350,7 @@ func (followService *FollowServiceImp) GetFollowers(userId int64) ([]User, error
 	err1 := followService.BuildUser(userId, userFollowers, userFollowersId, 1)
 
 	if nil != err1 {
-		log.Println(err1.Error())
+		log.Printf("BuildUser failed: %v", err1)
 	}
 
 	return userFollowers, nil
@@ -334,13 +367,18 @@ func GetFriendsByRedis(userId int64) ([]int64, int64, error) {
 	keyCnt, err := redis.UserFriends.Exists(redis.Ctx, strconv.FormatInt(userId, 10)).Result()
 
 	if err != nil {
-		log.Println(err.Error())
+		log.Printf("Check Redis existence failed: %v", err)
+		return nil, 0, err
 	}
 
 	if keyCnt > 0 {
 		// 键存在，获取键中集合元素
 		ids := redis.UserFriends.SMembers(redis.Ctx, strconv.FormatInt(userId, 10)).Val()
-		idsInt64, _ := convertToInt64Array(ids)
+		idsInt64, err := convertToInt64Array(ids)
+		if err != nil {
+			log.Printf("ConvertToInt64Array failed: %v", err)
+			return nil, 0, err
+		}
 
 		return idsInt64, int64(len(idsInt64)), nil
 
@@ -348,7 +386,8 @@ func GetFriendsByRedis(userId int64) ([]int64, int64, error) {
 		// 键不存在，获取数据库数据更新至redis，返回数据库所获取数据
 		userFriendsId, userFriendsCnt, err1 := followDao.GetFriendsInfo(userId)
 		if err1 != nil {
-			log.Println(err1.Error())
+			log.Printf("GetFriendsInfo failed: %v", err1)
+			return nil, 0, err1
 		}
 		ImportToRDBFriend(userId, userFriendsId)
 
@@ -363,7 +402,7 @@ func (followService *FollowServiceImp) GetFriends(userId int64) ([]FriendUser, e
 	userFriendId, userFriendCnt, err := GetFriendsByRedis(userId)
 
 	if nil != err {
-		log.Println(err.Error())
+		log.Printf("GetFriendsByRedis failed: %v", err)
 	}
 
 	// 使用好友数量创建空好友结构体数组
@@ -373,7 +412,7 @@ func (followService *FollowServiceImp) GetFriends(userId int64) ([]FriendUser, e
 	err1 := followService.BuildFriendUser(userId, userFriends, userFriendId)
 
 	if err1 != nil {
-		log.Println(err1.Error())
+		log.Printf("BuildFriendUser failed: %v", err1)
 	}
 
 	return userFriends, nil
@@ -390,14 +429,16 @@ func (followService *FollowServiceImp) GetFollowingCnt(userId int64) (int64, err
 	keyCnt, err := redis.UserFollowings.Exists(redis.Ctx, strconv.FormatInt(userId, 10)).Result()
 
 	if err != nil {
-		log.Println(err.Error())
+		log.Printf("Check Redis existence failed: %v", err)
+		return 0, err
 	}
 
 	if keyCnt > 0 {
 		// 键存在，获取键中集合元素个数
 		cnt, err2 := redis.UserFollowings.SCard(redis.Ctx, strconv.FormatInt(userId, 10)).Result()
 		if err2 != nil {
-			log.Println(err2.Error())
+			log.Printf("Get Redis count failed: %v", err2)
+			return 0, err2
 		}
 		if cnt < 100 { // 数据小的场景下 查询耗时短 数据差异明显 缓存需及时更新
 			redis.UserFollowings.Expire(redis.Ctx, strconv.Itoa(int(userId)), time.Duration(5+int(time.Second)*rand.Intn(5)))
@@ -412,7 +453,8 @@ func (followService *FollowServiceImp) GetFollowingCnt(userId int64) (int64, err
 		// 键不存在，获取数据库数据更新至redis，返回数据库所获取数据
 		ids, _, err1 := followDao.GetFollowingsInfo(userId)
 		if err1 != nil {
-			log.Println(err1.Error())
+			log.Printf("GetFollowingsInfo failed: %v", err1)
+			return 0, err1
 		}
 
 		ImportToRDBFollowing(userId, ids)
@@ -433,7 +475,8 @@ func (followService *FollowServiceImp) GetFollowerCnt(userId int64) (int64, erro
 	keyCnt, err := redis.UserFollowers.Exists(redis.Ctx, strconv.FormatInt(userId, 10)).Result()
 
 	if err != nil {
-		log.Println(err.Error())
+		log.Printf("Check Redis existence failed: %v", err)
+		return 0, err
 	}
 
 	if keyCnt > 0 {
@@ -441,7 +484,8 @@ func (followService *FollowServiceImp) GetFollowerCnt(userId int64) (int64, erro
 		cnt, err2 := redis.UserFollowers.SCard(redis.Ctx, strconv.Itoa(int(userId))).Result()
 
 		if err2 != nil {
-			log.Println(err2.Error())
+			log.Printf("Get Redis count failed: %v", err2)
+			return 0, err2
 		}
 		if cnt < 100 { // 数据小的场景下 查询耗时短 数据差异明显 缓存需及时更新
 			redis.UserFollowers.Expire(redis.Ctx, strconv.Itoa(int(userId)), time.Duration(5+int(time.Second)*rand.Intn(5)))
@@ -457,7 +501,8 @@ func (followService *FollowServiceImp) GetFollowerCnt(userId int64) (int64, erro
 		ids, _, err1 := followDao.GetFollowersInfo(userId)
 
 		if err1 != nil {
-			log.Println(err1.Error())
+			log.Printf("GetFollowersInfo failed: %v", err1)
+			return 0, err1
 		}
 
 		ImportToRDBFollower(userId, ids)
@@ -478,7 +523,8 @@ func (followService *FollowServiceImp) CheckIsFollowing(userId int64, targetId i
 	keyCnt, err := redis.UserFollowings.Exists(redis.Ctx, strconv.FormatInt(userId, 10)).Result()
 
 	if err != nil {
-		log.Println(err.Error())
+		log.Printf("Check Redis existence failed: %v", err)
+		return false, err
 	}
 
 	if keyCnt > 0 {
@@ -486,7 +532,8 @@ func (followService *FollowServiceImp) CheckIsFollowing(userId int64, targetId i
 		flag, err3 := redis.UserFollowings.SIsMember(redis.Ctx, strconv.Itoa(int(userId)), targetId).Result()
 
 		if err3 != nil {
-			log.Println(err3)
+			log.Printf("Check Redis membership failed: %v", err3)
+			return false, err3
 		}
 
 		if flag {
@@ -499,7 +546,8 @@ func (followService *FollowServiceImp) CheckIsFollowing(userId int64, targetId i
 		ids, _, err1 := followDao.GetFollowingsInfo(userId)
 
 		if err1 != nil {
-			log.Println(err1)
+			log.Printf("GetFollowingsInfo failed: %v", err1)
+			return false, err1
 		}
 
 		ImportToRDBFollowing(userId, ids)
@@ -507,7 +555,8 @@ func (followService *FollowServiceImp) CheckIsFollowing(userId int64, targetId i
 		isFollow, err2 := followDao.FindFollowRelation(userId, targetId)
 
 		if err2 != nil {
-			log.Println(err2)
+			log.Printf("FindFollowRelation failed: %v", err2)
+			return false, err2
 		}
 
 		return isFollow, nil
@@ -553,105 +602,237 @@ func ImportToRDBFriend(userId int64, ids []int64) {
 	注： builduser方法根据传入的buildtype决定是构建关注用户还是粉丝用户
 */
 
+// BatchGetUserNames 批量获取用户名，减少数据库查询次数
+func (followService *FollowServiceImp) BatchGetUserNames(ids []int64) (map[int64]string, error) {
+	if len(ids) == 0 {
+		return make(map[int64]string), nil
+	}
+
+	u := dao.User
+	userList, err := u.Where(u.ID.In(ids...)).Find()
+	if err != nil {
+		log.Printf("BatchGetUserNames failed: %v", err)
+		return nil, err
+	}
+
+	nameMap := make(map[int64]string, len(userList))
+	for _, user := range userList {
+		nameMap[user.ID] = user.Name
+	}
+
+	return nameMap, nil
+}
+
+// BatchGetFollowingCounts 批量获取关注数
+func (followService *FollowServiceImp) BatchGetFollowingCounts(ids []int64) (map[int64]int64, error) {
+	if len(ids) == 0 {
+		return make(map[int64]int64), nil
+	}
+
+	followDao := repository.NewFollowDaoInstance()
+	countMap := make(map[int64]int64, len(ids))
+
+	for _, id := range ids {
+		keyCnt, err := redis.UserFollowings.Exists(redis.Ctx, strconv.FormatInt(id, 10)).Result()
+		if err != nil {
+			log.Printf("Check Redis existence failed: %v", err)
+			continue
+		}
+
+		if keyCnt > 0 {
+			cnt, _ := redis.UserFollowings.SCard(redis.Ctx, strconv.FormatInt(id, 10)).Result()
+			countMap[id] = cnt
+		} else {
+			cnt, _ := followDao.GetFollowingCnt(id)
+			countMap[id] = cnt
+		}
+	}
+
+	return countMap, nil
+}
+
+// BatchGetFollowerCounts 批量获取粉丝数
+func (followService *FollowServiceImp) BatchGetFollowerCounts(ids []int64) (map[int64]int64, error) {
+	if len(ids) == 0 {
+		return make(map[int64]int64), nil
+	}
+
+	followDao := repository.NewFollowDaoInstance()
+	countMap := make(map[int64]int64, len(ids))
+
+	for _, id := range ids {
+		keyCnt, err := redis.UserFollowers.Exists(redis.Ctx, strconv.FormatInt(id, 10)).Result()
+		if err != nil {
+			log.Printf("Check Redis existence failed: %v", err)
+			continue
+		}
+
+		if keyCnt > 0 {
+			cnt, _ := redis.UserFollowers.SCard(redis.Ctx, strconv.FormatInt(id, 10)).Result()
+			countMap[id] = cnt
+		} else {
+			cnt, _ := followDao.GetFollowerCnt(id)
+			countMap[id] = cnt
+		}
+	}
+
+	return countMap, nil
+}
+
+// BatchCheckIsFollowing 批量检查用户是否关注了目标用户
+func (followService *FollowServiceImp) BatchCheckIsFollowing(userId int64, targetIds []int64) (map[int64]bool, error) {
+	if len(targetIds) == 0 {
+		return make(map[int64]bool), nil
+	}
+
+	resultMap := make(map[int64]bool, len(targetIds))
+
+	keyCnt, err := redis.UserFollowings.Exists(redis.Ctx, strconv.FormatInt(userId, 10)).Result()
+	if err != nil {
+		log.Printf("Check Redis existence failed: %v", err)
+	}
+
+	if keyCnt > 0 {
+		for _, targetId := range targetIds {
+			flag, _ := redis.UserFollowings.SIsMember(redis.Ctx, strconv.FormatInt(userId, 10), targetId).Result()
+			resultMap[targetId] = flag
+		}
+	} else {
+		followDao := repository.NewFollowDaoInstance()
+		for _, targetId := range targetIds {
+			flag, _ := followDao.FindFollowRelation(userId, targetId)
+			resultMap[targetId] = flag
+		}
+	}
+
+	return resultMap, nil
+}
+
 // BuildUser 根据传入的id列表和空user数组，构建业务所需user数组并返回
 func (followService *FollowServiceImp) BuildUser(userId int64, users []User, ids []int64, buildtype int) error {
-	//folowDao := repository.NewFollowDaoInstance()
+	if len(ids) == 0 {
+		return nil
+	}
 
-	// 遍历传入的用户id，组成user结构体
-	for i := 0; i < len(ids); i++ {
+	// 批量获取所有用户信息
+	userNameMap, err := followService.BatchGetUserNames(ids)
+	if err != nil {
+		log.Printf("BatchGetUserNames failed: %v", err)
+		return err
+	}
 
-		// 用户id赋值
-		users[i].Id = ids[i]
+	followingCountMap, err := followService.BatchGetFollowingCounts(ids)
+	if err != nil {
+		log.Printf("BatchGetFollowingCounts failed: %v", err)
+		return err
+	}
 
-		// 用户name赋值
-		var err1 error
-		users[i].Name, err1 = followService.GetUserName(ids[i])
-		if nil != err1 {
-			log.Println(err1)
-			return err1
+	followerCountMap, err := followService.BatchGetFollowerCounts(ids)
+	if err != nil {
+		log.Printf("BatchGetFollowerCounts failed: %v", err)
+		return err
+	}
+
+	var isFollowMap map[int64]bool
+	if buildtype == 1 {
+		isFollowMap, err = followService.BatchCheckIsFollowing(userId, ids)
+		if err != nil {
+			log.Printf("BatchCheckIsFollowing failed: %v", err)
+			return err
+		}
+	}
+
+	for i, id := range ids {
+		users[i].Id = id
+		users[i].Name = userNameMap[id]
+
+		if users[i].Name == "" {
+			users[i].Name = "未知用户"
 		}
 
-		// 用户关注数赋值
-		var err2 error
-		users[i].FollowCount, err2 = followService.GetFollowingCnt(ids[i])
-		if nil != err2 {
-			log.Println(err2.Error())
-			return err2
-		}
+		users[i].FollowCount = followingCountMap[id]
+		users[i].FollowerCount = followerCountMap[id]
 
-		// 用户粉丝数赋值
-		var err3 error
-		users[i].FollowerCount, err3 = followService.GetFollowerCnt(ids[i])
-		if nil != err3 {
-			log.Println(err3.Error())
-			return err3
-		}
-
-		// 根据传入的buildtype决定是哪种业务的user构建
 		if buildtype == 1 {
-			// 粉丝用户的isfollow属性需要调用接口再确认一下
-			users[i].IsFollow, _ = followService.CheckIsFollowing(userId, ids[i])
+			users[i].IsFollow = isFollowMap[id]
 		} else {
-			// 关注用户的isfollow属性确定是true
 			users[i].IsFollow = true
 		}
-
 	}
+
 	return nil
+}
+
+// BatchGetLatestMessages 批量量取与多个好友的最新消息
+func (followService *FollowServiceImp) BatchGetLatestMessages(userId int64, friendIds []int64) (map[int64]*model.Message, error) {
+	if len(friendIds) == 0 {
+		return make(map[int64]*model.Message), nil
+	}
+
+	messageMap := make(map[int64]*model.Message, len(friendIds))
+
+	for _, friendId := range friendIds {
+		messageInfo, err := followService.GetLatestMessage(userId, friendId)
+		if err != nil {
+			log.Printf("GetLatestMessage failed for userId %d, friendId %d: %v", userId, friendId, err)
+			continue
+		}
+		messageMap[friendId] = messageInfo
+	}
+
+	return messageMap, nil
 }
 
 // BuildFriendUser 根据传入的id列表和空frienduser数组，构建业务所需frienduser数组并返回
 func (followService *FollowServiceImp) BuildFriendUser(userId int64, friendUsers []FriendUser, ids []int64) error {
-
-	//followDao := repository.NewFollowDaoInstance()
-
-	// 遍历传入的好友id，组装好友user结构体
-	for i := 0; i < len(ids); i++ {
-
-		// 好友id赋值
-		friendUsers[i].Id = ids[i]
-
-		// 好友name赋值
-		var err1 error
-		friendUsers[i].Name, err1 = followService.GetUserName(ids[i])
-		if nil != err1 {
-			log.Println(err1)
-			return err1
-		}
-
-		// 好友关注数赋值
-		var err2 error
-		friendUsers[i].FollowCount, err2 = followService.GetFollowingCnt(ids[i])
-		if nil != err2 {
-			log.Println(err2.Error())
-			return err2
-		}
-
-		// 好友粉丝数赋值
-		var err3 error
-		friendUsers[i].FollowerCount, err3 = followService.GetFollowerCnt(ids[i])
-		if nil != err3 {
-			log.Println(err3.Error())
-			return err3
-		}
-
-		// 好友其他属性赋值
-		friendUsers[i].IsFollow = true
-		friendUsers[i].Avatar = viper.GetString("settings.oss.avatar")
-
-		// 调用message模块获取聊天记录
-		messageInfo, err := followService.GetLatestMessage(userId, ids[i])
-
-		//在根据id获取不到最新一条消息时，需要返回对应的id
-		if err != nil {
-
-			continue
-		}
-
-		friendUsers[i].MsgContent = messageInfo.Content
-		friendUsers[i].MsgType = messageInfo.ActionType
+	if len(ids) == 0 {
+		return nil
 	}
 
-	// 将空数组内属性构建完成即可，不用特意返回数组
+	// 批量获取所有用户信息
+	userNameMap, err := followService.BatchGetUserNames(ids)
+	if err != nil {
+		log.Printf("BatchGetUserNames failed: %v", err)
+		return err
+	}
+
+	followingCountMap, err := followService.BatchGetFollowingCounts(ids)
+	if err != nil {
+		log.Printf("BatchGetFollowingCounts failed: %v", err)
+		return err
+	}
+
+	followerCountMap, err := followService.BatchGetFollowerCounts(ids)
+	if err != nil {
+		log.Printf("BatchGetFollowerCounts failed: %v", err)
+		return err
+	}
+
+	messageMap, err := followService.BatchGetLatestMessages(userId, ids)
+	if err != nil {
+		log.Printf("BatchGetLatestMessages failed: %v", err)
+	}
+
+	defaultAvatar := viper.GetString("settings.oss.avatar")
+
+	for i, id := range ids {
+		friendUsers[i].Id = id
+		friendUsers[i].Name = userNameMap[id]
+
+		if friendUsers[i].Name == "" {
+			friendUsers[i].Name = "未知用户"
+		}
+
+		friendUsers[i].FollowCount = followingCountMap[id]
+		friendUsers[i].FollowerCount = followerCountMap[id]
+		friendUsers[i].IsFollow = true
+		friendUsers[i].Avatar = defaultAvatar
+
+		if messageInfo, exists := messageMap[id]; exists && messageInfo != nil {
+			friendUsers[i].MsgContent = messageInfo.Content
+			friendUsers[i].MsgType = messageInfo.ActionType
+		}
+	}
+
 	return nil
 }

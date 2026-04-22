@@ -25,8 +25,19 @@ func MessageAction(c *gin.Context) {
 	content := c.Query("content")
 
 	if user, exist := usersLoginInfo[token]; exist {
-		userIdB, _ := strconv.Atoi(toUserId)
-		chatKey := genChatKey(user.Id, int64(userIdB))
+		// Validate user ID
+		userIdB, err := strconv.ParseInt(toUserId, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, Response{StatusCode: 1, StatusMsg: "Invalid user ID format"})
+			return
+		}
+
+		// Sanitize content
+		if len(content) > 500 {
+			content = content[:500]
+		}
+
+		chatKey := genChatKey(user.Id, userIdB)
 
 		atomic.AddInt64(&messageIdSequence, 1)
 		curMessage := Message{
@@ -52,8 +63,13 @@ func MessageChat(c *gin.Context) {
 	toUserId := c.Query("to_user_id")
 
 	if user, exist := usersLoginInfo[token]; exist {
-		userIdB, _ := strconv.Atoi(toUserId)
-		chatKey := genChatKey(user.Id, int64(userIdB))
+		userIdB, err := strconv.ParseInt(toUserId, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, Response{StatusCode: 1, StatusMsg: "Invalid user ID format"})
+			return
+		}
+
+		chatKey := genChatKey(user.Id, userIdB)
 
 		c.JSON(http.StatusOK, ChatResponse{Response: Response{StatusCode: 0}, MessageList: tempChat[chatKey]})
 	} else {

@@ -13,7 +13,7 @@ import (
 )
 
 // 测试单例模式
-func TestGetUserServiceInstance(t *testing.T) {
+func TestGetUserServiceInstanceSingleton(t *testing.T) {
 	usi1 := GetUserServiceInstance()
 	usi2 := GetUserServiceInstance()
 	if usi1 != usi2 {

@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
 	"net/http"
+	"regexp"
 	"time"
 )
 
@@ -37,10 +38,52 @@ type UserResponse struct {
 	User service.User `json:"user"`
 }
 
+// ValidateUsername validates username format
+func ValidateUsername(username string) bool {
+	// Username must be 3-20 characters, only letters and numbers
+	re := regexp.MustCompile(`^[a-zA-Z0-9]{3,20}$`)
+	return re.MatchString(username)
+}
+
+// ValidatePassword validates password format
+func ValidatePassword(password string) bool {
+	// Password must be at least 6 characters, contain both letters and numbers
+	if len(password) < 6 {
+		return false
+	}
+
+	hasLetter := regexp.MustCompile(`[a-zA-Z]`).MatchString(password)
+	hasNumber := regexp.MustCompile(`[0-9]`).MatchString(password)
+
+	return hasLetter && hasNumber
+}
+
 func Register(c *gin.Context) {
-	username := c.Query("username")
-	password := c.Query("password")
-	passwordKey := encryption.Encrypt(password)
+	username := c.PostForm("username")
+	password := c.PostForm("password")
+
+	// Validate input
+	if !ValidateUsername(username) {
+		c.JSON(http.StatusOK, UserLoginResponse{
+			Response: Response{StatusCode: 1, StatusMsg: "用户名格式不正确"},
+		})
+		return
+	}
+
+	if !ValidatePassword(password) {
+		c.JSON(http.StatusOK, UserLoginResponse{
+			Response: Response{StatusCode: 1, StatusMsg: "密码必须至少6位，包含字母和数字"},
+		})
+		return
+	}
+
+	passwordKey, err := encryption.EncryptPassword(password)
+	if err != nil {
+		c.JSON(http.StatusOK, UserLoginResponse{
+			Response: Response{StatusCode: 1, StatusMsg: "密码加密失败"},
+		})
+		return
+	}
 
 	usi := service.GetUserServiceInstance()
 	if _, isExist := usi.GetUserBasicByPassword(username, passwordKey); isExist {
@@ -81,12 +124,11 @@ func Register(c *gin.Context) {
 }
 
 func Login(c *gin.Context) {
-	username := c.Query("username")
-	password := c.Query("password")
-	passwordKey := encryption.Encrypt(password)
+	username := c.PostForm("username")
+	password := c.PostForm("password")
 
 	usi := service.GetUserServiceInstance()
-	user, isExist := usi.GetUserBasicByPassword(username, passwordKey)
+	user, isExist := usi.GetUserBasicByPassword(username, password)
 	if !isExist {
 		c.JSON(http.StatusOK, UserLoginResponse{
 			Response: Response{
