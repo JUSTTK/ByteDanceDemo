@@ -11,7 +11,7 @@ type CommentService interface {
 	GetCommentCnt(videoId int64) (int64, error)
 
 	CommentAction(comment model.Comment) (Comment, error)
-	DeleteCommentAction(commentId int64) error
+	DeleteCommentAction(commentId int64, userId int64) error
 	GetCommentList(videoId int64, userId int64) ([]Comment, error)
 }
 

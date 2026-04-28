@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"github.com/redis/go-redis/v9"
+	"github.com/spf13/viper"
 	"log"
 	"strconv"
 
@@ -19,9 +20,9 @@ type RedisClient struct {
 var GlobalRedisClient *RedisClient
 
 func Init() {
-	// 你的 Redis 配置
-	addr := "43.140.203.85:6388"
-	password := "sample_douyin"
+	// 从配置文件读取Redis配置
+	addr := viper.GetString("settings.redis.addr")
+	password := viper.GetString("settings.redis.password")
 	db := 0
 
 	// 初始化全局 RedisClient

@@ -68,7 +68,18 @@ func (commentService *CommentServiceImpl) CommentAction(comment model.Comment) (
 	return commentData, nil
 }
 
-func (commentService *CommentServiceImpl) DeleteCommentAction(commentId int64) error {
+func (commentService *CommentServiceImpl) DeleteCommentAction(commentId int64, userId int64) error {
+	// 先查询评论，检查用户权限
+	plainComment, err := repository.GetCommentById(commentId)
+	if err != nil {
+		return fmt.Errorf("comment not found")
+	}
+
+	// 检查用户是否是评论作者
+	if plainComment.UserID != userId {
+		return fmt.Errorf("permission denied: you can only delete your own comments")
+	}
+
 	// redis操作：先查redis，若有则更新redis. 若不在redis中，直接走数据库删除，返回客户端。
 	commentIdToStr := strconv.FormatInt(commentId, 10)
 	n, err := redis.RdbCVid.Exists(redis.Ctx, commentIdToStr).Result()
@@ -116,26 +127,7 @@ func (commentService *CommentServiceImpl) GetCommentList(videoId int64, userId i
 	}
 	// 缓存中存在评论列表
 	if cnt > 0 {
-		var commentInfoList []Comment
-		log.Println("videoId", videoIdToStr)
-		commentIdStringList, err := redis.RdbVCid.SMembers(redis.Ctx, videoIdToStr).Result()
-		if err != nil {
-			log.Println("read redis vId failed", err)
-			//return nil, err
-		}
-		for _, commentIdString := range commentIdStringList {
-			var commentData Comment
-			commentString, err := redis.RdbCIdComment.Get(redis.Ctx, commentIdString).Result()
-			b := []byte(commentString)
-			err = json.Unmarshal(b, &commentData)
-			if err != nil {
-				log.Println("unmarshal failed", err)
-			}
-			commentInfoList = append(commentInfoList, commentData)
-		}
-		log.Println("从redis读取的评论列表")
-		sort.Sort(CommentSlice(commentInfoList))
-		return commentInfoList, nil
+		return getCommentsFromCache(videoIdToStr)
 	}
 	// 评论不在缓存中，评论既不在缓存也不在数据库中
 	// 先根据videoId查评论id，再查用户信息
@@ -151,40 +143,13 @@ func (commentService *CommentServiceImpl) GetCommentList(videoId int64, userId i
 	if n == 0 {
 		return nil, nil
 	}
-	// 评论在数据库不在缓存中，查数据库并更新到缓存
-	commentInfoList := make([]Comment, 0, n)
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for _, comment := range plainCommentList {
-		var commentData Comment
-		go func(comment model.Comment) {
-			commentService.CombineComment(&commentData, &comment)
-			commentInfoList = append(commentInfoList, commentData)
-			commentIdToStr := strconv.FormatInt(comment.ID, 10)
-			insertRedisVCId(videoIdToStr, commentIdToStr, commentData)
-			wg.Done()
-		}(*comment)
-
+	// 使用Worker Pool处理评论列表
+	pool := GetCommentWorkerPool()
+	commentInfoList, err := pool.ProcessComments(plainCommentList, videoId)
+	if err != nil {
+		log.Println("ProcessComments error:", err)
+		return nil, err
 	}
-	wg.Wait()
-	// 按照评论的先后时间降序排列
-	sort.Sort(CommentSlice(commentInfoList))
-	// 防止脏读，-1在这里我体会不到用处，反而会产生脏数据
-	//_, err = redis.RdbVCid.SAdd(redis.Ctx, videoIdToStr, -1).Result()
-	//if err != nil {
-	//	log.Println("redis save fail:vId-cId")
-	//}
-	//// 设置key的过期时间
-	//_, err = redis.RdbVCid.Expire(redis.Ctx, videoIdToStr, time.Minute*1).Result()
-	//if err != nil {
-	//	log.Println("set expire time failed")
-	//}
-	// 组装好commentList每一个comment序列化后将其存入redis里
-	//for _, comment := range commentInfoList {
-	//	commentIdToStr := strconv.FormatInt(comment.Id, 10)
-	//	insertRedisVCId(videoIdToStr, commentIdToStr, comment)
-	//
-	//}
 	log.Println("get commentList success")
 	return commentInfoList, nil
 }
@@ -260,4 +225,105 @@ func (commentSlice CommentSlice) Less(i, j int) bool {
 
 func (commentSlice CommentSlice) Swap(i, j int) {
 	commentSlice[i], commentSlice[j] = commentSlice[j], commentSlice[i]
+}
+
+// CommentWorkerPool 评论数据处理工作池
+type CommentWorkerPool struct {
+	workerCount int
+}
+
+var commentPoolInstance *CommentWorkerPool
+var commentPoolOnce sync.Once
+
+func GetCommentWorkerPool() *CommentWorkerPool {
+	commentPoolOnce.Do(func() {
+		commentPoolInstance = &CommentWorkerPool{
+			workerCount: 10,
+		}
+	})
+	return commentPoolInstance
+}
+
+// ProcessComments 并发处理评论列表（使用worker pool模式）
+func (p *CommentWorkerPool) ProcessComments(
+	plainComments []*model.Comment,
+	videoId int64,
+) ([]Comment, error) {
+	n := len(plainComments)
+	if n == 0 {
+		return nil, nil
+	}
+
+	resultChan := make(chan Comment, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+
+	sem := make(chan struct{}, p.workerCount)
+
+	for _, comment := range plainComments {
+		go func(c *model.Comment) {
+			sem <- struct{}{}
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
+
+			var commentData Comment
+			commentService := GetCommentServiceInstance()
+			err := commentService.CombineComment(&commentData, c)
+			if err != nil {
+				log.Println("CombineComment error:", err)
+				return
+			}
+
+			resultChan <- commentData
+
+			videoIdToStr := strconv.FormatInt(videoId, 10)
+			commentIdToStr := strconv.FormatInt(c.ID, 10)
+			go insertRedisVCId(videoIdToStr, commentIdToStr, commentData)
+		}(comment)
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	commentInfoList := make([]Comment, 0, n)
+	for commentData := range resultChan {
+		commentInfoList = append(commentInfoList, commentData)
+	}
+
+	sort.Sort(CommentSlice(commentInfoList))
+	return commentInfoList, nil
+}
+
+// getCommentsFromCache 从缓存中获取评论列表
+func getCommentsFromCache(videoIdToStr string) ([]Comment, error) {
+	var commentInfoList []Comment
+	commentIdStringList, err := redis.RdbVCid.SMembers(redis.Ctx, videoIdToStr).Result()
+	if err != nil {
+		log.Println("read redis vId failed", err)
+		return nil, err
+	}
+
+	for _, commentIdString := range commentIdStringList {
+		var commentData Comment
+		commentString, err := redis.RdbCIdComment.Get(redis.Ctx, commentIdString).Result()
+		if err != nil {
+			log.Println("get comment from redis failed", err)
+			continue
+		}
+		b := []byte(commentString)
+		err = json.Unmarshal(b, &commentData)
+		if err != nil {
+			log.Println("unmarshal failed", err)
+			continue
+		}
+		commentInfoList = append(commentInfoList, commentData)
+	}
+
+	log.Println("从redis读取的评论列表")
+	sort.Sort(CommentSlice(commentInfoList))
+	return commentInfoList, nil
 }

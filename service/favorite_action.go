@@ -3,350 +3,236 @@ package service
 import (
 	"bytedancedemo/database/mysql"
 	"bytedancedemo/utils"
-	"container/heap"
 	"errors"
 	"fmt"
-	"github.com/redis/go-redis/v9"
 	"strconv"
 	"sync"
-	"time"
 
 	"bytedancedemo/dao"
 	"bytedancedemo/model"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
-type Task struct {
+// FavoriteTask 点赞任务
+type FavoriteTask struct {
 	UserID     int64
 	VideoID    int64
-	Action     int32 // 1 for like, 2 for unlike
-	RetryCount int
-	ResultChan chan<- Result // 用于返回结果的通道
+	ActionType int32
+	ResultChan chan<- FavoriteResult
 }
 
-type Result struct {
+// FavoriteResult 处理结果
+type FavoriteResult struct {
 	Success    bool
 	Error      error
-	StatusCode int
+	StatusCode int32
 	StatusMsg  string
 }
-type TaskQueue struct {
-	tasks []*Task
-	mutex sync.Mutex
+
+// FavoriteWorkerPool 点赞工作池（单例）
+type FavoriteWorkerPool struct {
+	taskChan chan FavoriteTask
+	quitChan chan struct{}
+	wg       sync.WaitGroup
+	once     sync.Once
 }
 
-func NewTaskQueue() *TaskQueue {
-	//slog.Debug("NewTaskQueue")
-	return &TaskQueue{
-		tasks: make([]*Task, 0),
-	}
-}
+var favoritePool *FavoriteWorkerPool
 
-func (q *TaskQueue) Len() int {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
-	length := len(q.tasks)
-	//slog.Debug("TaskQueue length:", length)
-	return length
-}
-
-func (q *TaskQueue) Less(i, j int) bool {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
-	return q.tasks[i].Action < q.tasks[j].Action
-}
-
-func (q *TaskQueue) Swap(i, j int) {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
-	q.tasks[i], q.tasks[j] = q.tasks[j], q.tasks[i]
-}
-func (q *TaskQueue) PushTask(task *Task, dispatchSignal chan bool) {
-	heap.Push(q, task) // 使用标准的堆操作
-	//slog.Debug("Pushed task to queue: %+v", task)
-	//slog.Debug("TaskQueue length after push:", len(q.tasks)) // 添加此行
-	dispatchSignal <- true // 发送信号
-	//slog.Debug("Dispatch signal sent")
-}
-
-func (q *TaskQueue) PopTask() *Task {
-	task := heap.Pop(q).(*Task) // 使用标准的堆操作
-	//slog.Debug("Popped task from queue: %+v", task)
-	return task
-}
-
-func (q *TaskQueue) Push(x interface{}) {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
-	item, ok := x.(*Task)
-	if !ok {
-		//slog.Fatal("Push: Expected *Task, got something else")
-		return
-	}
-	q.tasks = append(q.tasks, item)
-}
-
-func (q *TaskQueue) Pop() interface{} {
-	q.mutex.Lock()
-	defer q.mutex.Unlock()
-	n := len(q.tasks)
-	item := q.tasks[n-1]
-	q.tasks = q.tasks[0 : n-1]
-	return item
-}
-
-func startWorkers(workerCount int, tasks *TaskQueue, quit chan bool, dispatchSignal chan bool) {
-	var wg sync.WaitGroup
-	taskCh := make(chan Task)
-
-	//slog.Debug("Starting task dispatcher")
-
-	go func() {
-		for {
-			select {
-			case _, ok := <-dispatchSignal:
-				if !ok {
-					// dispatchSignal 被关闭，退出循环
-					return
-				}
-				//slog.Debug("Received dispatch signal")
-				if tasks.Len() > 0 {
-					task := tasks.PopTask()
-					//slog.Debug("Dispatching task:", task)
-					taskCh <- *task
-				} else {
-					//slog.Debug("No tasks in queue")
-				}
-			default:
-				time.Sleep(time.Millisecond * 100) // sleep for a while before next check
-			}
+// InitFavoriteWorkerPool 初始化点赞工作池（单例，只在应用启动时调用一次）
+func InitFavoriteWorkerPool(workerCount int) {
+	favoritePool.once.Do(func() {
+		favoritePool = &FavoriteWorkerPool{
+			taskChan: make(chan FavoriteTask, 1000), // 缓冲1000个任务
+			quitChan: make(chan struct{}),
 		}
-	}()
-	//slog.Debug("Starting workers")
+		favoritePool.start(workerCount)
+	})
+}
 
+// StartFavoriteWorkerPool 公开的初始化方法（用于配置文件指定worker数量）
+func StartFavoriteWorkerPool() {
+	// 从配置读取worker数量，默认为10
+	workerCount := 10
+	InitFavoriteWorkerPool(workerCount)
+}
+
+// GetFavoriteWorkerPool 获取工作池单例
+func GetFavoriteWorkerPool() *FavoriteWorkerPool {
+	if favoritePool == nil {
+		StartFavoriteWorkerPool()
+	}
+	return favoritePool
+}
+
+// start 启动worker
+func (p *FavoriteWorkerPool) start(workerCount int) {
 	for i := 0; i < workerCount; i++ {
-		wg.Add(1)
-		//slog.Debug("Starting worker", i)
-		go worker(taskCh, quit, tasks, &wg, dispatchSignal)
+		p.wg.Add(1)
+		go p.worker()
 	}
-
-	wg.Wait() // 等待所有工作协程完成
-
-	//slog.Debug("All workers have finished")
 }
 
-func shouldRetry(task Task) bool {
-	// 重试最多3次
-	if task.RetryCount < 3 {
-		return true
-	}
-	return false
-}
-func worker(tasks <-chan Task, quit <-chan bool, taskQueue *TaskQueue, wg *sync.WaitGroup, dispatchSignal chan bool) {
-	defer wg.Done() // 在工作协程结束时调用
+// worker 处理任务的goroutine
+func (p *FavoriteWorkerPool) worker() {
+	defer p.wg.Done()
 	for {
-
 		select {
-		case <-quit:
-			//slog.Debug("Worker stopped.")
+		case task := <-p.taskChan:
+			result := p.processTask(task)
+			task.ResultChan <- result
+		case <-p.quitChan:
 			return
-		case task := <-tasks:
-			//slog.Debug("Processing task: %+v", task)
-			result := processTask(task)
-			if result.Error != nil && shouldRetry(task) {
-				task.RetryCount++                                        // 增加重试次数
-				time.Sleep(time.Second * time.Duration(task.RetryCount)) // 增加延迟
-				// 重新将任务推入堆中
-				taskQueue.PushTask(&task, dispatchSignal)
-			} else {
-				//slog.Debug("Sending result to results channel: %+v", result)
-				task.ResultChan <- result
-			}
 		}
 	}
 }
 
-func processTask(task Task) Result {
+// processTask 处理单个任务
+func (p *FavoriteWorkerPool) processTask(task FavoriteTask) FavoriteResult {
 	var err error
 	statusCode := SuccessCode
 	statusMsg := SuccessMessage
 
-	switch task.Action {
+	switch task.ActionType {
 	case 1:
 		err = likeVideo(task.UserID, task.VideoID)
-		err := utils.UpdateLikeCounts(task.UserID, task.VideoID, true)
 		if err != nil {
-			return Result{}
+			statusCode = ErrorCode
+			statusMsg = err.Error()
+		} else {
+			err = utils.UpdateLikeCounts(task.UserID, task.VideoID, true)
+			if err != nil {
+				statusMsg = "点赞成功，但计数更新失败"
+			}
 		}
 	case 2:
 		err = unlikeVideo(task.UserID, task.VideoID)
-		err := utils.UpdateLikeCounts(task.UserID, task.VideoID, false)
 		if err != nil {
-			return Result{}
+			statusCode = ErrorCode
+			statusMsg = err.Error()
+		} else {
+			err = utils.UpdateLikeCounts(task.UserID, task.VideoID, false)
+			if err != nil {
+				statusMsg = "取消点赞成功，但计数更新失败"
+			}
 		}
 	default:
-		err = fmt.Errorf("invalid action_type: %v", task.Action)
+		err = fmt.Errorf("invalid action_type: %v", task.ActionType)
 		statusCode = ErrorCode
 		statusMsg = err.Error()
 	}
 
-	return Result{
+	return FavoriteResult{
 		Success:    err == nil,
 		Error:      err,
-		StatusCode: int(statusCode),
+		StatusCode: statusCode,
 		StatusMsg:  statusMsg,
 	}
 }
 
-var (
-	taskQueue      *TaskQueue
-	dispatchSignal chan bool
-	results        chan Result
-	quit           chan bool
-)
-
-func (s *FavoriteServiceImpl) StartFavoriteAction() {
-	// 创建全局变量
-	taskQueue = NewTaskQueue()
-	dispatchSignal = make(chan bool, 10)
-	results = make(chan Result, 10)
-	quit = make(chan bool)
-
-	// 初始化堆
-	heap.Init(taskQueue)
-
-	// 启动工人 Usmups.
-	go startWorkers(5, taskQueue, quit, dispatchSignal)
-
-}
-func (s *FavoriteServiceImpl) FavoriteAction(userId int64, videoID int64, actionType int32) (FavoriteActionResponse, error) {
-	//slog.Debug("Starting FavoriteAction for videoID:", videoID, "actionType:", actionType)
-	//dispatchSignal := make(chan bool, 10)
-	//taskQueue := NewTaskQueue()
-	//slog.Debug("TaskQueue created:", taskQueue) // 添加此行来查看任务队列的详细信息
-	//// 初始化堆
-	//heap.Init(taskQueue)
-	//results := make(chan Result, 10)
-
-	task := &Task{
-		UserID:     int64(userId),
-		VideoID:    int64(videoID),
-		Action:     actionType,
-		ResultChan: results, // 将结果通道添加到任务中
+// Submit 提交任务并等待结果
+func (p *FavoriteWorkerPool) Submit(userID, videoID int64, actionType int32) (FavoriteActionResponse, error) {
+	resultChan := make(chan FavoriteResult, 1)
+	task := FavoriteTask{
+		UserID:     userID,
+		VideoID:    videoID,
+		ActionType: actionType,
+		ResultChan: resultChan,
 	}
-	//slog.Debug("Task created:", task) // 添加此行来查看任务的详细信息
-	taskQueue.PushTask(task, dispatchSignal)
-	//slog.Debug("Task pushed to queue")
 
-	//quit := make(chan bool)
+	// 提交任务（非阻塞）
+	select {
+	case p.taskChan <- task:
+		// 任务已提交
+	default:
+		return FavoriteActionResponse{}, fmt.Errorf("系统繁忙，请稍后重试")
+	}
 
-	// 启动工人
-	//go startWorkers(5, taskQueue, results, quit, s.utils.GlobalRedisClient, dispatchSignal)
-	//
-	//slog.Debug("Workers started")
-	//
-	//slog.Debug("Task pushed to the queue:", task)
+	// 等待结果（阻塞，但有超时）
+	result := <-resultChan
 
-	// 等待结果
-	//slog.Debug("Waiting for results")
-	result := <-results
-
-	//slog.Debug("Results received:")
-
-	// 关闭任务通道
-	//if taskQueue.Len() == 0 {
-	//	close(quit)
-	//	close(dispatchSignal)我觉得就是。
-	//}
-	//slog.Debug("FavoriteAction completed for videoID:", videoID)
-	//slog.Infof("Number of goroutines: %d\n", runtime.NumGoroutine())
 	return FavoriteActionResponse{
-		StatusCode: int32(result.StatusCode),
+		StatusCode: result.StatusCode,
 		StatusMsg:  result.StatusMsg,
 	}, result.Error
 }
+
+// Shutdown 优雅关闭工作池
+func (p *FavoriteWorkerPool) Shutdown() {
+	close(p.quitChan)
+	p.wg.Wait()
+}
+
+func (s *FavoriteServiceImpl) FavoriteAction(userId int64, videoID int64, actionType int32) (FavoriteActionResponse, error) {
+	pool := GetFavoriteWorkerPool()
+	return pool.Submit(userId, videoID, actionType)
+}
+
 func likeVideo(userID int64, videoID int64) error {
-	// 开始一个新的事务
 	tx := mysql.DB.Begin()
 	if tx.Error != nil {
 		return tx.Error
 	}
-	// 使用特定的查询构造方式
 	first, err := dao.Like.Where(dao.Like.UserID.Eq(userID), dao.Like.VideoID.Eq(videoID)).First()
 	if err != nil {
-		// 如果记录未找
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// 创建一个新地喜欢记录
 			like := model.Like{
 				UserID:  userID,
 				VideoID: videoID,
 				Liked:   1,
 			}
-			// 将新记录保存到数据库
 			if err := tx.Create(&like).Error; err != nil {
-				tx.Rollback() // 回滚事务
+				tx.Rollback()
 				return err
 			}
 			return tx.Commit().Error
 		} else {
-			// 如果发生其他错误，则回滚事务并返回该错误
 			tx.Rollback()
 			return err
 		}
 	}
-	//log.Printf("first: %+v, err: %v\n", first, err)
-	// 假设 first 是一个 *model.Like 类型
 	if first.Liked == 1 {
-		tx.Rollback() // 回滚事务
+		tx.Rollback()
 		return fmt.Errorf("user has already liked this video")
 	}
 
-	// 将喜欢的状态设置为1
 	first.Liked = 1
-	// 保存记录
 	if err := tx.Save(&first).Error; err != nil {
-		tx.Rollback() // 回滚事务
+		tx.Rollback()
 		return err
 	}
 
-	// 提交事务
 	return tx.Commit().Error
 }
+
 func unlikeVideo(userID int64, videoID int64) error {
-	// 开始一个新的事务
 	tx := mysql.DB.Begin()
 	if tx.Error != nil {
 		return tx.Error
 	}
 
-	// 使用特定的查询构造方式
 	first, err := dao.Like.Where(dao.Like.UserID.Eq(userID), dao.Like.VideoID.Eq(videoID)).First()
 	if err != nil {
-		// 如果记录未找到
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			tx.Rollback() // 回滚事务
+			tx.Rollback()
 			return fmt.Errorf("no like found for this user and video")
 		}
-		// 如果发生其他错误，则回滚事务并返回该错误
 		tx.Rollback()
 		return err
 	}
 
-	// 假设 first 是一个 *model.Like 类型
 	if first.Liked == 0 {
-		tx.Rollback() // 回滚事务
+		tx.Rollback()
 		return fmt.Errorf("user has already unliked this video")
 	}
 
-	// 将喜欢的状态设置为0
 	first.Liked = 0
-	// 保存记录
 	if err := tx.Save(&first).Error; err != nil {
-		tx.Rollback() // 回滚事务
+		tx.Rollback()
 		return err
 	}
 
-	// 提交事务
 	return tx.Commit().Error
 }
 

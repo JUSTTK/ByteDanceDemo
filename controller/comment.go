@@ -47,8 +47,7 @@ func CommentAction(c *gin.Context) {
 	// 评论
 	if actionType == 1 {
 		content := c.PostForm("comment_text")
-		sensetive.InitFilter()
-		content = sensetive.Filter.Replace(content, '#')
+		content = sensetive.GetFilter().Replace(content, '#')
 		var comment model.Comment
 		comment.UserID = userId
 		comment.VideoID = videoId
@@ -84,8 +83,8 @@ func CommentAction(c *gin.Context) {
 			})
 			return
 		}
-		//删除评论操作
-		err = commentService.DeleteCommentAction(commentId)
+		//删除评论操作（检查权限）
+		err = commentService.DeleteCommentAction(commentId, userId)
 		if err != nil {
 			c.JSON(http.StatusOK, CommentActionResponse{
 				Response: Response{StatusCode: -1,

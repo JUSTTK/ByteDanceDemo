@@ -22,6 +22,9 @@ var UserFollowers *redis.Client
 // UserFriends 根据用户id找到他的好友
 var UserFriends *redis.Client
 
+// RdbUserDetails 存储用户详情缓存
+var RdbUserDetails *redis.Client
+
 // RdbVCid 存储video与comment的关系
 var RdbVCid *redis.Client
 
@@ -95,6 +98,11 @@ func InitRedis() {
 		Addr:     ProdRedisAddr,
 		Password: ProRedisPwd,
 		DB:       13,
+	})
+	RdbUserDetails = redis.NewClient(&redis.Options{
+		Addr:     ProdRedisAddr,
+		Password: ProRedisPwd,
+		DB:       14,
 	})
 	_, err := RdbTest.Ping(Ctx).Result()
 	if err != nil {

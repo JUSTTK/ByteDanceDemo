@@ -38,8 +38,7 @@ func FavoriteAction(c *gin.Context) {
 	//zap.L().Debug("点赞请求参数", zap.Any("req", req))
 
 	s := service.FavoriteServiceImpl{}
-	s.StartFavoriteAction()                                                         // 创建 FavoriteServiceImpl 实例
-	resp, err := s.FavoriteAction(userIDValue.(int64), req.VideoID, req.ActionType) // 使用实例调用方法
+	resp, err := s.FavoriteAction(userIDValue.(int64), req.VideoID, req.ActionType)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error1": err.Error()})
 		return

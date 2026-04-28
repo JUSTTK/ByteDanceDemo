@@ -94,3 +94,12 @@ func GetCommentCnt(videoId int64) (int64, error) {
 	//}
 	//return count, nil
 }
+
+func GetCommentById(commentId int64) (*model.Comment, error) {
+	c := dao.Comment
+	comment, err := c.Where(c.ID.Eq(commentId)).First()
+	if err != nil {
+		return nil, err
+	}
+	return comment, nil
+}

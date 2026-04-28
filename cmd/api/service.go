@@ -6,7 +6,9 @@ import (
 	"bytedancedemo/dao"
 	"bytedancedemo/database/mysql"
 	redis2 "bytedancedemo/database/redis"
+	"bytedancedemo/service"
 	redis3 "bytedancedemo/utils"
+	"bytedancedemo/utils/sensetive"
 
 	"bytedancedemo/middleware/rabbitmq"
 	"bytedancedemo/middleware/redis"
@@ -37,6 +39,9 @@ var (
 			rabbitmq.InitCommentRabbitMQ()
 			rabbitmq.InitFollowRabbitMQ()
 			dao.SetDefault(mysql.DB)
+			service.StartFavoriteWorkerPool() // 初始化点赞worker池
+			service.InitUserWorkerPool(10, 100) // 初始化用户查询worker池（最小10，最大100）
+			sensetive.InitFilter()           // 初始化敏感词过滤器
 		},
 		Run: func(cmd *cobra.Command, args []string) {
 			run()
